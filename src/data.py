@@ -94,19 +94,19 @@ class NuscData(torch.utils.data.Dataset):
         return samples
     
     def sample_augmentation(self):
-        H, W = self.data_aug_conf['H'], self.data_aug_conf['W']
-        fH, fW = self.data_aug_conf['final_dim']
+        H, W = self.data_aug_conf['H'], self.data_aug_conf['W']  # 900, 1600
+        fH, fW = self.data_aug_conf['final_dim']  # 128, 352
         if self.is_train:
-            resize = np.random.uniform(*self.data_aug_conf['resize_lim'])
-            resize_dims = (int(W*resize), int(H*resize))
-            newW, newH = resize_dims
-            crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim']))*newH) - fH
-            crop_w = int(np.random.uniform(0, max(0, newW - fW)))
-            crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
+            resize = np.random.uniform(*self.data_aug_conf['resize_lim'])  # 0.2215754461206792
+            resize_dims = (int(W*resize), int(H*resize))  # (354, 199)
+            newW, newH = resize_dims  # 354, 199
+            crop_h = int((1 - np.random.uniform(*self.data_aug_conf['bot_pct_lim']))*newH) - fH  # 63
+            crop_w = int(np.random.uniform(0, max(0, newW - fW)))  # 1
+            crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)  # (1, 63, 353, 191)
             flip = False
             if self.data_aug_conf['rand_flip'] and np.random.choice([0, 1]):
                 flip = True
-            rotate = np.random.uniform(*self.data_aug_conf['rot_lim'])
+            rotate = np.random.uniform(*self.data_aug_conf['rot_lim'])  # 1.177658597821802
         else:
             resize = max(fH/H, fW/W)
             resize_dims = (int(W*resize), int(H*resize))
@@ -148,14 +148,26 @@ class NuscData(torch.utils.data.Dataset):
                 'sensor_token': '725903f5b62f56118f4094b46a4470d8'
                 'translation': [1.72200568478, 0.00475453292289, 1.49491291905]
                 'rotation': [0.5077241387638071, -0.4973392230703816, 0.49837167536166627, -0.4964832014373754]
+                'camera_intrinsic': [[1266.417203046554, 0.0, 816.2670197447984], [0.0, 1266.417203046554, 491.50706579294757], [0.0, 0.0, 1.0]]
             """
             rot = torch.Tensor(Quaternion(sens['rotation']).rotation_matrix)  
-            # sens['rotation']: [0.4998015430569128, -0.5030316162024876, 0.4997798114386805, -0.49737083824542755]
-            # rot: torch.Size([3, 3])
+            """
+            sens['rotation']: [0.4998015430569128, -0.5030316162024876, 0.4997798114386805, -0.49737083824542755]
+            rot: tensor([[ 5.6848e-03, -5.6367e-03,  9.9997e-01],
+                         [-9.9998e-01, -8.3712e-04,  5.6801e-03],
+                         [ 8.0507e-04, -9.9998e-01, -5.6413e-03]])
+            """
             tran = torch.Tensor(sens['translation'])  # [1.70079118954, 0.0159456324149, 1.51095763913]
 
             # augmentation (resize, crop, horizontal flip, rotate)
             resize, resize_dims, crop, flip, rotate = self.sample_augmentation()
+            """
+            resize: 0.2178168484673551
+            resize_dims: (348, 196)
+            crop: (0, 40, 352, 168)
+            flip: True
+            rotate: 1.7486513318363883
+            """
             img, post_rot2, post_tran2 = img_transform(img, post_rot, post_tran,
                                                      resize=resize,
                                                      resize_dims=resize_dims,
@@ -163,6 +175,12 @@ class NuscData(torch.utils.data.Dataset):
                                                      flip=flip,
                                                      rotate=rotate,
                                                      )
+            """
+            img.size: (352, 128)
+            post_rot2.shape: tensor([[ 0.2215,  0.0046],
+                                     [-0.0046,  0.2215]])
+            post_tran2.shape: tensor([ -3.5728, -59.3354])
+            """
             
             # for convenience, make augmentation matrices 3x3
             post_tran = torch.zeros(3)
