@@ -121,20 +121,24 @@ def img_transform(img, post_rot, post_tran,
                   resize, resize_dims, crop,
                   flip, rotate):
     # adjust image
-    img = img.resize(resize_dims)
+    img = img.resize(resize_dims)  # <PIL.JpegImagePlugin.JpegImageFile image mode=RGB size=1600x900 at 0x7F0E8629CF70>
     img = img.crop(crop)
+    # 图片翻转
     if flip:
         img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
+    # 图片旋转
     img = img.rotate(rotate)
 
     # post-homography transformation
     post_rot *= resize
     post_tran -= torch.Tensor(crop[:2])
-    if flip:
+    # 分别修改旋转和平移矩阵，实现坐标翻转效果
+    if flip:  # flip = False
         A = torch.Tensor([[-1, 0], [0, 1]])
         b = torch.Tensor([crop[2] - crop[0], 0])
         post_rot = A.matmul(post_rot)
         post_tran = A.matmul(post_tran) + b
+    # 分别修改旋转和平移矩阵，实现坐标旋转效果
     A = get_rot(rotate/180*np.pi)
     b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
     b = A.matmul(-b) + b

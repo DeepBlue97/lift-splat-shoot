@@ -94,6 +94,10 @@ class NuscData(torch.utils.data.Dataset):
         return samples
     
     def sample_augmentation(self):
+        """
+        计算图像resize比例、crop像素量
+        计算图像是否翻转、旋转弧度量
+        """
         H, W = self.data_aug_conf['H'], self.data_aug_conf['W']  # 900, 1600
         fH, fW = self.data_aug_conf['final_dim']  # 128, 352
         if self.is_train:
@@ -150,7 +154,7 @@ class NuscData(torch.utils.data.Dataset):
                 'rotation': [0.5077241387638071, -0.4973392230703816, 0.49837167536166627, -0.4964832014373754]
                 'camera_intrinsic': [[1266.417203046554, 0.0, 816.2670197447984], [0.0, 1266.417203046554, 491.50706579294757], [0.0, 0.0, 1.0]]
             """
-            rot = torch.Tensor(Quaternion(sens['rotation']).rotation_matrix)  
+            rot = torch.Tensor(Quaternion(sens['rotation']).rotation_matrix)
             """
             sens['rotation']: [0.4998015430569128, -0.5030316162024876, 0.4997798114386805, -0.49737083824542755]
             rot: tensor([[ 5.6848e-03, -5.6367e-03,  9.9997e-01],
@@ -158,6 +162,14 @@ class NuscData(torch.utils.data.Dataset):
                          [ 8.0507e-04, -9.9998e-01, -5.6413e-03]])
             """
             tran = torch.Tensor(sens['translation'])  # [1.70079118954, 0.0159456324149, 1.51095763913]
+            """ 相机位置罗列
+            [1.70079118954, 0.0159456324149, 1.51095763913]
+            [1.03569100218, 0.484795032713, 1.59097014818]
+            [0.0283260309358, 0.00345136761476, 1.57910346144]
+            [1.0148780988, -0.480568219723, 1.56239545128]
+            [1.52387798135, 0.494631336551, 1.50932822144]
+            [1.5508477543, -0.493404796419, 1.49574800619]
+            """
 
             # augmentation (resize, crop, horizontal flip, rotate)
             resize, resize_dims, crop, flip, rotate = self.sample_augmentation()
@@ -192,8 +204,8 @@ class NuscData(torch.utils.data.Dataset):
             intrins.append(intrin)
             rots.append(rot)
             trans.append(tran)
-            post_rots.append(post_rot)
-            post_trans.append(post_tran)
+            post_rots.append(post_rot)  # resize、crop后的旋转矩阵
+            post_trans.append(post_tran)  # resize、crop后的平移矩阵
 
         return (torch.stack(imgs), torch.stack(rots), torch.stack(trans),
                 torch.stack(intrins), torch.stack(post_rots), torch.stack(post_trans))
@@ -297,13 +309,13 @@ class SegmentationData(NuscData):
         imgs, rots, trans, intrins, post_rots, post_trans = self.get_image_data(rec, cams)
         """
         imgs.shape: torch.Size([5, 3, 128, 352])
-        rots.shape:
-        trans.shape:
-        intrins.shape:
-        post_rots.shape:
-        post_trans.shape:
+        rots.shape: torch.Size([5, 3, 3])
+        trans.shape: torch.Size([5, 3])
+        intrins.shape: torch.Size([5, 3, 3])
+        post_rots.shape: torch.Size([5, 3, 3])
+        post_trans.shape: torch.Size([5, 3])
         """
-        binimg = self.get_binimg(rec)
+        binimg = self.get_binimg(rec)  # torch.Size([1, 200, 200]) 由于只考虑了 vehicle, 值为0或1
         
         return imgs, rots, trans, intrins, post_rots, post_trans, binimg
 

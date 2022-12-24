@@ -136,12 +136,12 @@ class LiftSplatShoot(nn.Module):
                                               self.grid_conf['ybound'],
                                               self.grid_conf['zbound'],
                                               )
-        self.dx = nn.Parameter(dx, requires_grad=False)  # torch.Size([3])
-        self.bx = nn.Parameter(bx, requires_grad=False)  # torch.Size([3])
-        self.nx = nn.Parameter(nx, requires_grad=False)  # torch.Size([3])
+        self.dx = nn.Parameter(dx, requires_grad=False)  # 探测范围网格微分量 tensor([ 0.5000,  0.5000, 20.0000])
+        self.bx = nn.Parameter(bx, requires_grad=False)  # 探测范围网格起始格子中心位置 tensor([-49.7500, -49.7500,   0.0000])
+        self.nx = nn.Parameter(nx, requires_grad=False)  # 探测范围网格数目 tensor([200, 200,   1])
 
-        self.downsample = 16
-        self.camC = 64
+        self.downsample = 16  # 下采样率
+        self.camC = 64  # 多相机特征输出通道数总和
         self.frustum = self.create_frustum()  # torch.Size([41, 8, 22, 3])
         self.D, _, _, _ = self.frustum.shape  # 41
         self.camencode = CamEncode(self.D, self.camC, self.downsample)
@@ -160,7 +160,7 @@ class LiftSplatShoot(nn.Module):
         ys = torch.linspace(0, ogfH - 1, fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)  # torch.Size([41, 8, 22])
 
         # D x H x W x 3
-        frustum = torch.stack((xs, ys, ds), -1)  # torch.Size([41, 8, 22, 3])
+        frustum = torch.stack((xs, ys, ds), -1)  # torch.Size([41, 8, 22, 3]) 相当于为相机图像创建了一个带x,y,d坐标的长方体
         return nn.Parameter(frustum, requires_grad=False)
 
     def get_geometry(self, rots, trans, intrins, post_rots, post_trans):
@@ -172,16 +172,25 @@ class LiftSplatShoot(nn.Module):
 
         # undo post-transformation
         # B x N x D x H x W x 3
-        points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
-        points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
+        # self.frustum.shape: torch.Size([41, 8, 22, 3])
+        # post_trans.shape: torch.Size([4, 5, 3])
+        # post_trans.view(B, N, 1, 1, 1, 3).shape: torch.Size([4, 5, 1, 1, 1, 3])
+        # 根据resize、crop情况平移坐标
+        points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)  # torch.Size([4, 5, 41, 8, 22, 3]) 一个形状为[4, 5, 41, 8, 22]的高维体，每个元素有3个元素组成的位置坐标
+        # torch.inverse(post_rots).shape: torch.Size([4, 5, 3, 3])
+        # torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).shape: torch.Size([4, 5, 1, 1, 1, 3, 3])
+        # points.unsqueeze(-1).shape: torch.Size([4, 5, 41, 8, 22, 3, 1])
+        # 根据数据增强的随机rotate（本文实现用了一个均值作为定值）、resize、crop情况旋转坐标
+        points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1)) # torch.Size([4, 5, 41, 8, 22, 3, 1])
 
+        # points[:, :, :, :, :, :2].shape: torch.Size([4, 5, 41, 8, 22, 2, 1])
         # cam_to_ego
         points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
                             points[:, :, :, :, :, 2:3]
                             ), 5)
-        combine = rots.matmul(torch.inverse(intrins))
-        points = combine.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)
-        points += trans.view(B, N, 1, 1, 1, 3)
+        combine = rots.matmul(torch.inverse(intrins))  # 外参和内参旋转矩阵进行矩阵乘得到总的旋转矩阵
+        points = combine.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)  # 根据总的旋转矩阵旋转，将相机坐标下的高维立方体（视锥）转换到车体坐标
+        points += trans.view(B, N, 1, 1, 1, 3)  # 根据外参平移
 
         return points
 
@@ -205,13 +214,13 @@ class LiftSplatShoot(nn.Module):
         x = x.reshape(Nprime, C)  # torch.Size([144320, 64])
 
         # flatten indices
-        geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()  # torch.Size([4, 5, 41, 8, 22, 3])
+        geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()  # torch.Size([4, 5, 41, 8, 22, 3])  # 将几何特征的坐标和车体坐标对齐，原来都是正值，现在一半为正
         geom_feats = geom_feats.view(Nprime, 3)  # torch.Size([144320, 3])
-        batch_ix = torch.cat([torch.full([Nprime//B, 1], ix,  # torch.Size([144320, 1])
+        batch_ix = torch.cat([torch.full([Nprime//B, 1], ix,  # torch.Size([144320, 1])  # 每个样本首尾相接，用0,1,2,3来代表不同样本
                              device=x.device, dtype=torch.long) for ix in range(B)])
-        geom_feats = torch.cat((geom_feats, batch_ix), 1)  # torch.Size([144320, 4])
+        geom_feats = torch.cat((geom_feats, batch_ix), 1)  # torch.Size([144320, 4])  # 增加一个通道，用于指示属于哪个样本
 
-        # filter out points that are outside box  # torch.Size([144320])
+        # filter out points that are outside box  # torch.Size([144320])  # 除去探测范围格子以外的点
         kept = (geom_feats[:, 0] >= 0) & (geom_feats[:, 0] < self.nx[0])\
             & (geom_feats[:, 1] >= 0) & (geom_feats[:, 1] < self.nx[1])\
             & (geom_feats[:, 2] >= 0) & (geom_feats[:, 2] < self.nx[2])
@@ -232,7 +241,7 @@ class LiftSplatShoot(nn.Module):
         else:
             x, geom_feats = QuickCumsum.apply(x, geom_feats, ranks)  # torch.Size([41382, 64]), torch.Size([41382, 4])
 
-        # griddify (B x C x Z x X x Y)
+        # griddify 网格化 (B x C x Z x X x Y) 
         final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device)  # torch.Size([4, 64, 1, 200, 200])
         final[geom_feats[:, 3], :, geom_feats[:, 2], geom_feats[:, 0], geom_feats[:, 1]] = x  # torch.Size([41382, 64])
 
@@ -242,11 +251,11 @@ class LiftSplatShoot(nn.Module):
         return final
 
     def get_voxels(self, x, rots, trans, intrins, post_rots, post_trans):
-        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)
+        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)  # 获得几何信息
         # geom.shape: torch.Size([4, 5, 41, 8, 22, 3])
-        x = self.get_cam_feats(x)
+        x = self.get_cam_feats(x)  # 获得相机特征
         # x.shape: torch.Size([4, 5, 41, 8, 22, 64])
-        x = self.voxel_pooling(geom, x)
+        x = self.voxel_pooling(geom, x)  # 将几何信息和图像特征转换为BEV下的特征
         # x.shape: torch.Size([4, 64, 200, 200])
         return x
 
@@ -259,9 +268,9 @@ class LiftSplatShoot(nn.Module):
         post_rots.shape: torch.Size([4, 5, 3, 3])
         post_trans.shape: torch.Size([4, 5, 3])
         """
-        x = self.get_voxels(x, rots, trans, intrins, post_rots, post_trans)  
+        x = self.get_voxels(x, rots, trans, intrins, post_rots, post_trans)  # 获得BEV下的特征
         # x.shape: torch.Size([4, 64, 200, 200])
-        x = self.bevencode(x)  
+        x = self.bevencode(x)  # 获得BEV下的预测
         # x.shape: torch.Size([4, 1, 200, 200])
         return x
 
