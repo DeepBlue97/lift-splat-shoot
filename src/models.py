@@ -151,9 +151,11 @@ class LiftSplatShoot(nn.Module):
         self.use_quickcumsum = True
     
     def create_frustum(self):
+        # 返回一个记录了坐标的4维数组，并且是等间距的，三个元素分别表示该网格的位置：宽-高-深度，x-y-d
         # make grid in image plane
         ogfH, ogfW = self.data_aug_conf['final_dim']  # 128, 352
         fH, fW = ogfH // self.downsample, ogfW // self.downsample  # (8, 22)
+        # self.grid_conf['dbound'] = [4.0, 45.0, 1.0] 探测范围4-45米，间隔1米
         ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)  # torch.Size([41, 8, 22])
         D, _, _ = ds.shape  # 41
         xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)  # torch.Size([41, 8, 22])
@@ -181,18 +183,19 @@ class LiftSplatShoot(nn.Module):
         # torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).shape: torch.Size([4, 5, 1, 1, 1, 3, 3])
         # points.unsqueeze(-1).shape: torch.Size([4, 5, 41, 8, 22, 3, 1])
         # 根据数据增强的随机rotate（本文实现用了一个均值作为定值）、resize、crop情况旋转坐标
-        points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1)) # torch.Size([4, 5, 41, 8, 22, 3, 1])
+        points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1)) 
+        # torch.Size([4, 5, 41, 8, 22, 3, 1])
 
         # points[:, :, :, :, :, :2].shape: torch.Size([4, 5, 41, 8, 22, 2, 1])
         # cam_to_ego
-        points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
-                            points[:, :, :, :, :, 2:3]
+        points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],  # 前面两位为宽和高。由于当前points中的x,y坐标是像素坐标（深度是相机坐标，单位m），为了转换为相机坐标，故需根据深度来线性缩放x,y。
+                            points[:, :, :, :, :, 2:3]  # 深度初始化时就是相机坐标，单位m，故不需要转换
                             ), 5)
-        combine = rots.matmul(torch.inverse(intrins))  # 外参和内参旋转矩阵进行矩阵乘得到总的旋转矩阵
+        combine = rots.matmul(torch.inverse(intrins))  # 外参和内参旋转矩阵进行矩阵乘得到总的旋转矩阵  torch.Size([4, 5, 41, 8, 22, 3, 1])
         points = combine.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)  # 根据总的旋转矩阵旋转，将相机坐标下的高维立方体（视锥）转换到车体坐标
         points += trans.view(B, N, 1, 1, 1, 3)  # 根据外参平移
 
-        return points
+        return points  # torch.Size([4, 5, 41, 8, 22, 3])
 
     def get_cam_feats(self, x):
         """Return B x N x D x H/downsample x W/downsample x C
@@ -213,7 +216,7 @@ class LiftSplatShoot(nn.Module):
         # flatten x
         x = x.reshape(Nprime, C)  # torch.Size([144320, 64])
 
-        # flatten indices
+        # flatten indices  # geom_feats 变成以格子索引为坐标，原来是以米为单位，现在为索引值，无单位
         geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()  # torch.Size([4, 5, 41, 8, 22, 3])  # 将几何特征的坐标和车体坐标对齐，原来都是正值，现在一半为正
         geom_feats = geom_feats.view(Nprime, 3)  # torch.Size([144320, 3])
         batch_ix = torch.cat([torch.full([Nprime//B, 1], ix,  # torch.Size([144320, 1])  # 每个样本首尾相接，用0,1,2,3来代表不同样本
@@ -223,30 +226,38 @@ class LiftSplatShoot(nn.Module):
         # filter out points that are outside box  # torch.Size([144320])  # 除去探测范围格子以外的点
         kept = (geom_feats[:, 0] >= 0) & (geom_feats[:, 0] < self.nx[0])\
             & (geom_feats[:, 1] >= 0) & (geom_feats[:, 1] < self.nx[1])\
-            & (geom_feats[:, 2] >= 0) & (geom_feats[:, 2] < self.nx[2])
+            & (geom_feats[:, 2] >= 0) & (geom_feats[:, 2] < self.nx[2])   # self.nx = tensor([200, 200,   1])
         x = x[kept]  # torch.Size([137828, 64])
         geom_feats = geom_feats[kept]  # torch.Size([137828, 4])
 
-        # get tensors from the same voxel next to each other  # torch.Size([137828])
+        """
+        * 100 * 4
+        * 4
+        * 4
+        * 1
+        """
+        # get tensors from the same voxel next to each other  # torch.Size([137828])  # 按照x、y、z、样本这四个的加权和的小大来定义顺序
         ranks = geom_feats[:, 0] * (self.nx[1] * self.nx[2] * B)\
             + geom_feats[:, 1] * (self.nx[2] * B)\
             + geom_feats[:, 2] * B\
             + geom_feats[:, 3]
-        sorts = ranks.argsort()  # torch.Size([137828])
-        x, geom_feats, ranks = x[sorts], geom_feats[sorts], ranks[sorts]
+        sorts = ranks.argsort()  # torch.Size([137828])  # 从大到小编号（索引值）
+        x, geom_feats, ranks = x[sorts], geom_feats[sorts], ranks[sorts]  # 根据索引值，重新排列，大的值在前
         # x.shpae: torch.Size([137828, 64]), geom_feats.shape: torch.Size([137828, 4]), ranks.shape: torch.Size([137828])
         # cumsum trick
-        if not self.use_quickcumsum:
+        if not self.use_quickcumsum:  # 为了中心区域的点或特征不过于密集，去掉一些点
             x, geom_feats = cumsum_trick(x, geom_feats, ranks)
         else:
             x, geom_feats = QuickCumsum.apply(x, geom_feats, ranks)  # torch.Size([41382, 64]), torch.Size([41382, 4])
 
-        # griddify 网格化 (B x C x Z x X x Y) 
+        # griddify 网格化 (B x C x Z x X x Y)
         final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device)  # torch.Size([4, 64, 1, 200, 200])
         final[geom_feats[:, 3], :, geom_feats[:, 2], geom_feats[:, 0], geom_feats[:, 1]] = x  # torch.Size([41382, 64])
+        # final.shape: torch.Size([4, 64, 1, 200, 200])
 
         # collapse Z
         final = torch.cat(final.unbind(dim=2), 1)
+        # final.shape: torch.Size([4, 64, 200, 200])
 
         return final
 
