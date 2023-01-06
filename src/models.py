@@ -151,6 +151,9 @@ class LiftSplatShoot(nn.Module):
         self.use_quickcumsum = True
     
     def create_frustum(self):
+        """
+        像素坐标下的3D格子
+        """
         # 返回一个记录了坐标的4维数组，并且是等间距的，三个元素分别表示该网格的位置：宽-高-深度，x-y-d
         # make grid in image plane
         ogfH, ogfW = self.data_aug_conf['final_dim']  # 128, 352
@@ -166,6 +169,9 @@ class LiftSplatShoot(nn.Module):
         return nn.Parameter(frustum, requires_grad=False)
 
     def get_geometry(self, rots, trans, intrins, post_rots, post_trans):
+        """
+        生成像素坐标和车体坐标的映射
+        """
         """Determine the (x,y,z) locations (in the ego frame)
         of the points in the point cloud.
         Returns B x N x D x H/downsample x W/downsample x 3
@@ -210,6 +216,10 @@ class LiftSplatShoot(nn.Module):
         return x
 
     def voxel_pooling(self, geom_feats, x):
+        """
+        删减特征+图像特征从像素坐标变换到BEV下
+        根据相机的内外参等几何信息获得的像素-车体坐标映射，以及相机的图像特征，去除掉一些冗余的图像特征和映射点后，定义一个BEV下的全0特征，将图像特征根据映射放置（赋值）到BEV下
+        """
         B, N, D, H, W, C = x.shape  # 4, 5, 41, 8, 22, 64
         Nprime = B*N*D*H*W  # 144320
 
@@ -263,11 +273,11 @@ class LiftSplatShoot(nn.Module):
         return final
 
     def get_voxels(self, x, rots, trans, intrins, post_rots, post_trans):
-        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)  # 获得几何信息
+        geom = self.get_geometry(rots, trans, intrins, post_rots, post_trans)  # 获得几何映射关系
         # geom.shape: torch.Size([4, 5, 41, 8, 22, 3])
         x = self.get_cam_feats(x)  # 获得相机特征
         # x.shape: torch.Size([4, 5, 41, 8, 22, 64])
-        x = self.voxel_pooling(geom, x)  # 将几何信息和图像特征转换为BEV下的特征
+        x = self.voxel_pooling(geom, x)  # 将几何映射关系和图像特征转换为BEV下的特征
         # x.shape: torch.Size([4, 64, 200, 200])
         return x
 
