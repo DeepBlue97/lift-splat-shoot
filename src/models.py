@@ -218,6 +218,7 @@ class LiftSplatShoot(nn.Module):
 
         # flatten indices  # geom_feats 变成以格子索引为坐标，原来是以米为单位，现在为索引值，无单位
         geom_feats = ((geom_feats - (self.bx - self.dx/2.)) / self.dx).long()  # torch.Size([4, 5, 41, 8, 22, 3])  # 将几何特征的坐标和车体坐标对齐，原来都是正值，现在一半为正
+        # / self.dx 则是从meter 变为无量纲，也就是格子（格子大小为0.5m x 0.5m x 20m），.long()使得所有值变为整数
         geom_feats = geom_feats.view(Nprime, 3)  # torch.Size([144320, 3])
         batch_ix = torch.cat([torch.full([Nprime//B, 1], ix,  # torch.Size([144320, 1])  # 每个样本首尾相接，用0,1,2,3来代表不同样本
                              device=x.device, dtype=torch.long) for ix in range(B)])
