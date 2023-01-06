@@ -250,7 +250,7 @@ class LiftSplatShoot(nn.Module):
         else:
             x, geom_feats = QuickCumsum.apply(x, geom_feats, ranks)  # torch.Size([41382, 64]), torch.Size([41382, 4])
 
-        # griddify 网格化 (B x C x Z x X x Y)
+        # griddify 网格化 (B x C x Z x X x Y)  # 把特征放到BEV坐标下的网格里
         final = torch.zeros((B, C, self.nx[2], self.nx[0], self.nx[1]), device=x.device)  # torch.Size([4, 64, 1, 200, 200])
         final[geom_feats[:, 3], :, geom_feats[:, 2], geom_feats[:, 0], geom_feats[:, 1]] = x  # torch.Size([41382, 64])
         # final.shape: torch.Size([4, 64, 1, 200, 200])
